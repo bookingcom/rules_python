@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Parse SimpleAPI HTML in Starlark.
+Parse SimpleAPI HTML and JSON (PEP 691) in Starlark.
 """
 
 load("//python/private:normalize_name.bzl", "normalize_name")
@@ -46,6 +46,11 @@ def parse_simpleapi_html(*, content, parse_index = False):
               then it will be `None`. An empty string yank reason means that the package is yanked but
               the reason is not provided.
     """
+    # Detect PEP 691 JSON responses (some servers return JSON even when
+    # Accept: text/html is requested, ignoring content negotiation).
+    if content.lstrip()[:1] == "{":
+        return _parse_simpleapi_json(content = content, parse_index = parse_index)
+
     sdists = {}
     whls = {}
     hashes_by_version = {}
@@ -151,6 +156,94 @@ def parse_simpleapi_html(*, content, parse_index = False):
 
     if parse_index:
         return packages
+
+    return struct(
+        sdists = sdists,
+        whls = whls,
+        hashes_by_version = hashes_by_version,
+    )
+
+def _parse_simpleapi_json(*, content, parse_index):
+    """Parse a PEP 691 Simple API JSON response.
+
+    Args:
+        content: {type}`str` The JSON content from the Simple API.
+        parse_index: {type}`bool` whether this is the root index page listing
+            all packages, or an individual package page.
+
+    Returns:
+        Same structure as {obj}`parse_simpleapi_html`.
+    """
+    data = json.decode(content)
+
+    if parse_index:
+        packages = {}
+        for project in data.get("projects", []):
+            name = project.get("name", "")
+            if not name:
+                continue
+            normalized = normalize_name(name)
+            # PEP 691 index entries have no URL; construct a relative one.
+            url = project.get("url", "{}/".format(normalized))
+            packages[normalized] = url
+        return packages
+
+    sdists = {}
+    whls = {}
+    hashes_by_version = {}
+
+    for file_info in data.get("files", []):
+        filename = file_info.get("filename", "")
+        if not filename:
+            continue
+
+        url = file_info.get("url", "")
+
+        # Build canonical <algo>:<hex> digests from all hashes and pick the
+        # preferred one (sha256 first) to use as the artifact key.
+        all_digests = []
+        for algo, hex_digest in file_info.get("hashes", {}).items():
+            d = hash.digest(algo, hex_digest)
+            if d:
+                all_digests.append(d)
+        digest = hash.preferred_digest(all_digests)
+
+        # PEP 691: yanked is absent/false (not yanked), true (yanked, no
+        # reason), or a reason string.
+        yanked_val = file_info.get("yanked", None)
+        if yanked_val == False or yanked_val == None:
+            yanked = None
+        elif yanked_val == True:
+            yanked = ""
+        else:
+            yanked = str(yanked_val)
+
+        # PEP 714: "core-metadata" or "dist-info-metadata" field.
+        metadata_sha256 = ""
+        metadata_url = ""
+        core_meta = file_info.get("core-metadata") or file_info.get("dist-info-metadata")
+        if core_meta:
+            if type(core_meta) == "dict":
+                metadata_sha256 = core_meta.get("sha256", "")
+            metadata_url = url + ".metadata"
+
+        version = version_from_filename(filename)
+        hashes_by_version.setdefault(version, []).append(digest)
+
+        dist = struct(
+            filename = filename,
+            version = version,
+            url = url,
+            digest = digest,
+            metadata_sha256 = metadata_sha256,
+            metadata_url = metadata_url,
+            yanked = yanked,
+        )
+
+        if filename.endswith(".whl"):
+            whls[digest] = dist
+        else:
+            sdists[digest] = dist
 
     return struct(
         sdists = sdists,
