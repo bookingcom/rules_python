@@ -358,6 +358,137 @@ def _test_sha256_fragment_digest(env):
 
 _tests.append(_test_sha256_fragment_digest)
 
+def _test_json_sdist(env):
+    """PEP 691: JSON response for a package page with an sdist."""
+    content = json.encode({
+        "meta": {"api-version": "1.1"},
+        "name": "foo",
+        "versions": ["0.0.1"],
+        "files": [
+            {
+                "filename": "foo-0.0.1.tar.gz",
+                "url": "https://example.org/full-url/foo-0.0.1.tar.gz",
+                "hashes": {"sha256": "deadbeefasource"},
+                "requires-python": ">=3.7",
+                "yanked": False,
+            },
+        ],
+    })
+    got = parse_simpleapi_html(content = content)
+
+    env.expect.that_collection(got.sdists).has_size(1)
+    env.expect.that_collection(got.whls).has_size(0)
+    env.expect.that_dict(got.hashes_by_version).contains_exactly({
+        "0.0.1": ["sha256:deadbeefasource"],
+    })
+
+    actual = env.expect.that_struct(
+        got.sdists["sha256:deadbeefasource"],
+        attrs = dict(
+            filename = subjects.str,
+            digest = subjects.str,
+            url = subjects.str,
+            yanked = subjects.str,
+            version = subjects.str,
+        ),
+    )
+    actual.filename().equals("foo-0.0.1.tar.gz")
+    actual.digest().equals("sha256:deadbeefasource")
+    actual.url().equals("https://example.org/full-url/foo-0.0.1.tar.gz")
+    actual.yanked().equals(None)
+    actual.version().equals("0.0.1")
+
+_tests.append(_test_json_sdist)
+
+def _test_json_whl_with_metadata(env):
+    """PEP 691: JSON response for a whl with core-metadata."""
+    content = json.encode({
+        "meta": {"api-version": "1.1"},
+        "name": "foo",
+        "versions": ["0.0.2"],
+        "files": [
+            {
+                "filename": "foo-0.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+                "url": "https://example.org/full-url/foo-0.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+                "hashes": {"sha256": "deadbeef"},
+                "core-metadata": {"sha256": "deadb00f"},
+                "yanked": False,
+            },
+        ],
+    })
+    got = parse_simpleapi_html(content = content)
+
+    env.expect.that_collection(got.whls).has_size(1)
+    env.expect.that_collection(got.sdists).has_size(0)
+
+    actual = env.expect.that_struct(
+        got.whls["sha256:deadbeef"],
+        attrs = dict(
+            filename = subjects.str,
+            metadata_sha256 = subjects.str,
+            metadata_url = subjects.str,
+            digest = subjects.str,
+            url = subjects.str,
+            yanked = subjects.str,
+            version = subjects.str,
+        ),
+    )
+    actual.filename().equals("foo-0.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl")
+    actual.metadata_sha256().equals("deadb00f")
+    actual.metadata_url().equals("https://example.org/full-url/foo-0.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata")
+    actual.digest().equals("sha256:deadbeef")
+    actual.url().equals("https://example.org/full-url/foo-0.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl")
+    actual.yanked().equals(None)
+    actual.version().equals("0.0.2")
+
+_tests.append(_test_json_whl_with_metadata)
+
+def _test_json_yanked(env):
+    """PEP 691: JSON response with yanked entries."""
+    content = json.encode({
+        "meta": {"api-version": "1.1"},
+        "name": "foo",
+        "versions": ["0.0.1"],
+        "files": [
+            {
+                "filename": "foo-0.0.1.tar.gz",
+                "url": "https://example.org/full-url/foo-0.0.1.tar.gz",
+                "hashes": {"sha256": "deadbeef01"},
+                "yanked": True,
+            },
+            {
+                "filename": "foo-0.0.1-py3-none-any.whl",
+                "url": "https://example.org/full-url/foo-0.0.1-py3-none-any.whl",
+                "hashes": {"sha256": "deadbeef02"},
+                "yanked": "security issue",
+            },
+        ],
+    })
+    got = parse_simpleapi_html(content = content)
+
+    env.expect.that_str(got.sdists["sha256:deadbeef01"].yanked).equals("")
+    env.expect.that_str(got.whls["sha256:deadbeef02"].yanked).equals("security issue")
+
+_tests.append(_test_json_yanked)
+
+def _test_json_index(env):
+    """PEP 691: JSON response for the root index page."""
+    content = json.encode({
+        "meta": {"api-version": "1.0"},
+        "projects": [
+            {"name": "foo"},
+            {"name": "B-Ar"},
+        ],
+    })
+    got = parse_simpleapi_html(content = content, parse_index = True)
+
+    env.expect.that_dict(got).contains_exactly({
+        "foo": "foo/",
+        "b_ar": "b_ar/",
+    })
+
+_tests.append(_test_json_index)
+
 def parse_simpleapi_html_test_suite(name):
     """Create the test suite.
 
